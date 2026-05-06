@@ -29,6 +29,7 @@ def _resolve_data_dir() -> Path:
 
 _DATA_DIR = _resolve_data_dir()
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
+_PROJECT_BINDINGS_FILE = Path(__file__).resolve().parent / "data" / "bindings.json"
 _UPDATED_TS_KEY = "__storage_updated_ts"
 
 
@@ -49,6 +50,18 @@ def _read_bindings_payload() -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _read_project_bindings_payload() -> dict[str, Any]:
+    if _PROJECT_BINDINGS_FILE.resolve() == _BINDINGS_FILE.resolve():
+        return {}
+    if not _PROJECT_BINDINGS_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(_PROJECT_BINDINGS_FILE.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
 def _payload_updated_ts(data: dict[str, Any]) -> int:
     try:
         return int(data.get(_UPDATED_TS_KEY, 0))
@@ -59,7 +72,15 @@ def _payload_updated_ts(data: dict[str, Any]) -> int:
 def _read_json() -> dict[str, Any]:
     _ensure_files()
     data = _read_bindings_payload()
-    return data if data else {}
+    if data:
+        return data
+
+    # Safety net: if runtime data dir is different and empty, recover from project-local JSON once.
+    project_data = _read_project_bindings_payload()
+    if project_data:
+        _write_json(project_data)
+        return project_data
+    return {}
 
 
 def _write_json(obj: dict[str, Any]) -> None:
