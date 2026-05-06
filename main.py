@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 import asyncio
 import datetime as dt
@@ -118,6 +119,8 @@ from storage import (
     remove_temp_voice_owner_id,
     get_daily_menu_message_ids,
     set_daily_menu_message_ids,
+    acquire_instance_lock_or_raise,
+    release_instance_lock,
 )
 from ui import (
     ApplicationPanelView,
@@ -7056,5 +7059,14 @@ async def on_message(message: discord.Message):
             pass
 
 
-bot.run(config.DISCORD_TOKEN)
+try:
+    acquire_instance_lock_or_raise()
+except Exception as exc:
+    print(f"[fatal] second bot instance detected or stale lock: {exc}")
+    sys.exit(1)
+
+try:
+    bot.run(config.DISCORD_TOKEN)
+finally:
+    release_instance_lock()
 
