@@ -6782,6 +6782,18 @@ async def vacation_panel(interaction: discord.Interaction, panel_channel: discor
 async def on_ready():
     if bot.user:
         print(f"Logged in as {bot.user} (ID: {bot.user.id})")
+    try:
+        from storage import get_storage_debug_info
+
+        info = get_storage_debug_info()
+        print(
+            "[storage] "
+            f"bindings={info.get('bindings_file')} "
+            f"keys={info.get('current_keys')} "
+            f"project_keys={info.get('project_keys')}"
+        )
+    except Exception as exc:
+        print(f"[storage] debug info failed: {exc}")
 
 
 @bot.event
