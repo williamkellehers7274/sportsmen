@@ -4175,6 +4175,13 @@ def _resolve_hub_target_voice(member: discord.Member, guild: discord.Guild) -> t
         return None, hint
     owner_id = get_temp_voice_owner_id(guild_id=guild.id, channel_id=vc.id)
     if owner_id is None:
+        # Fallback for legacy/missed mappings: if this member has explicit room-owner overwrite,
+        # restore DB binding so the private panel keeps working after restarts/manual edits.
+        member_overwrite = vc.overwrites.get(member)
+        if member_overwrite is not None and member_overwrite.manage_channels is True:
+            set_temp_voice_owner_id(guild_id=guild.id, channel_id=vc.id, owner_id=member.id)
+            owner_id = member.id
+    if owner_id is None:
         return None, "Панель работает только в **своей** комнате, созданной ботом через лобби.\n" + hint
     if not _can_manage_voice_room(member, owner_id):
         return None, "Только **владелец** этой комнаты или администратор может менять настройки."
