@@ -15,6 +15,7 @@ from storage import (
     get_accept_role_id_for_type,
     get_applications_enabled_for_type,
     get_call_category_id,
+    get_destination_channel_id,
     get_ticket_view_role_ids,
     next_ticket_id,
     set_applications_enabled_for_type,
@@ -81,10 +82,11 @@ class ApplicationModal(discord.ui.Modal):
         )
 
         content = f"Новая заявка: **{self.application_type}** • `#{ticket_id}`"
-        channel = interaction.client.get_channel(self.destination_channel_id)
+        destination_id = get_destination_channel_id(guild_id=interaction.guild.id) or self.destination_channel_id
+        channel = interaction.client.get_channel(destination_id)
         if channel is None:
             try:
-                channel = await interaction.client.fetch_channel(self.destination_channel_id)
+                channel = await interaction.client.fetch_channel(destination_id)
             except discord.NotFound:
                 channel = None
 
