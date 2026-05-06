@@ -5889,6 +5889,9 @@ async def bindings_summary(interaction: discord.Interaction):
         await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
         return
 
+    # Команда может собирать много данных, поэтому сразу подтверждаем interaction.
+    await interaction.response.defer(ephemeral=True)
+
     guild = interaction.guild
 
     def _ch(cid: int | None) -> str:
@@ -6022,7 +6025,7 @@ async def bindings_summary(interaction: discord.Interaction):
             e.add_field(name=n, value=v or "—", inline=False)
         embeds.append(e)
 
-    await interaction.response.send_message(embeds=embeds[:10], ephemeral=True)
+    await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
 
 
 class _DailyMessageTextModal(discord.ui.Modal):
