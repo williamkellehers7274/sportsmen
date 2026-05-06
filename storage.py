@@ -33,19 +33,31 @@ _BINDINGS_FILE = _DATA_DIR / "bindings.json"
 _DB_FILE = _DATA_DIR / "storage.db"
 _STATE_ROW_ID = 1
 _UPDATED_TS_KEY = "__storage_updated_ts"
+_SQLITE_IMPORT_MARKER = _DATA_DIR / ".sqlite_import_done"
 
 
 def _ensure_files() -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    # One-time forced import from legacy SQLite into JSON.
+    # Needed to migrate real production data when switching storage backend.
+    if not _SQLITE_IMPORT_MARKER.exists():
+        sqlite_data = _read_sqlite_payload()
+        if isinstance(sqlite_data, dict) and sqlite_data:
+            if _UPDATED_TS_KEY not in sqlite_data:
+                sqlite_data[_UPDATED_TS_KEY] = int(time.time())
+            try:
+                _BINDINGS_FILE.write_text(json.dumps(sqlite_data, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+        try:
+            _SQLITE_IMPORT_MARKER.write_text("ok", encoding="utf-8")
+        except Exception:
+            pass
     if _BINDINGS_FILE.exists():
         return
-    # One-time migration from legacy SQLite store into JSON.
-    sqlite_data = _read_sqlite_payload()
-    initial = sqlite_data if isinstance(sqlite_data, dict) else {}
-    if _UPDATED_TS_KEY not in initial:
-        initial[_UPDATED_TS_KEY] = int(time.time())
+    # If no JSON and no usable SQLite, initialize empty JSON.
     try:
-        _BINDINGS_FILE.write_text(json.dumps(initial, ensure_ascii=False), encoding="utf-8")
+        _BINDINGS_FILE.write_text(json.dumps({_UPDATED_TS_KEY: int(time.time())}, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
 
