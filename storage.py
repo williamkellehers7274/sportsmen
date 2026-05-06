@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ _DATA_DIR = Path(__file__).resolve().parent / "data"
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
 _DB_FILE = _DATA_DIR / "storage.db"
 _STATE_ROW_ID = 1
+_UPDATED_TS_KEY = "__storage_updated_ts"
 
 
 def _ensure_files() -> None:
@@ -36,7 +38,7 @@ def _ensure_files() -> None:
             conn.commit()
 
 
-def _read_json() -> dict[str, Any]:
+def _read_sqlite_payload() -> dict[str, Any]:
     _ensure_files()
     with sqlite3.connect(_DB_FILE) as conn:
         row = conn.execute("SELECT payload FROM storage_state WHERE id = ?", (_STATE_ROW_ID,)).fetchone()
@@ -44,23 +46,51 @@ def _read_json() -> dict[str, Any]:
     try:
         data = json.loads(payload or "{}")
     except json.JSONDecodeError:
-        data = {}
-    if isinstance(data, dict) and data:
-        return data
-    # Fallback to legacy JSON backup (useful if SQLite was reset/recreated).
-    if _BINDINGS_FILE.exists():
-        try:
-            legacy = json.loads(_BINDINGS_FILE.read_text(encoding="utf-8") or "{}")
-            if isinstance(legacy, dict):
-                return legacy
-        except Exception:
-            pass
+        return {}
     return data if isinstance(data, dict) else {}
+
+
+def _read_bindings_payload() -> dict[str, Any]:
+    if not _BINDINGS_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(_BINDINGS_FILE.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _payload_updated_ts(data: dict[str, Any]) -> int:
+    try:
+        return int(data.get(_UPDATED_TS_KEY, 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _read_json() -> dict[str, Any]:
+    sqlite_data = _read_sqlite_payload()
+    bindings_data = _read_bindings_payload()
+
+    sqlite_ts = _payload_updated_ts(sqlite_data)
+    bindings_ts = _payload_updated_ts(bindings_data)
+
+    # Prefer the freshest source by explicit timestamp.
+    if bindings_ts > sqlite_ts and bindings_data:
+        _write_json(bindings_data)
+        return bindings_data
+    if sqlite_data:
+        return sqlite_data
+    if bindings_data:
+        _write_json(bindings_data)
+        return bindings_data
+    return {}
 
 
 def _write_json(obj: dict[str, Any]) -> None:
     _ensure_files()
-    payload = json.dumps(obj, ensure_ascii=False)
+    safe_obj = dict(obj)
+    safe_obj[_UPDATED_TS_KEY] = int(time.time())
+    payload = json.dumps(safe_obj, ensure_ascii=False)
     with sqlite3.connect(_DB_FILE) as conn:
         conn.execute(
             "INSERT INTO storage_state (id, payload) VALUES (?, ?) "
