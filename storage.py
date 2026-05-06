@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +35,10 @@ def _resolve_data_dir() -> Path:
 _DATA_DIR = _resolve_data_dir()
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
 _PROJECT_BINDINGS_FILE = Path(__file__).resolve().parent / "data" / "bindings.json"
+_STORAGE_LOCK_FILE = _DATA_DIR / ".storage.lock"
+_INSTANCE_LOCK_FILE = _DATA_DIR / ".bot.instance.lock"
 _UPDATED_TS_KEY = "__storage_updated_ts"
+_LOCAL_RW_LOCK = threading.RLock()
 
 
 def _ensure_files() -> None:
@@ -80,27 +84,63 @@ def _payload_updated_ts(data: dict[str, Any]) -> int:
 
 
 def _read_json() -> dict[str, Any]:
-    _ensure_files()
-    data = _read_bindings_payload()
-    if _payload_without_meta(data):
-        return data
+    with _LOCAL_RW_LOCK:
+        _ensure_files()
+        data = _read_bindings_payload()
+        if _payload_without_meta(data):
+            return data
 
-    # Safety net: if runtime data dir is different and empty, recover from project-local JSON once.
-    project_data = _read_project_bindings_payload()
-    if _payload_without_meta(project_data):
-        _write_json(project_data)
-        return project_data
-    return data if data else {}
+        # Safety net: if runtime data dir is different and empty, recover from project-local JSON once.
+        project_data = _read_project_bindings_payload()
+        if _payload_without_meta(project_data):
+            _write_json(project_data)
+            return project_data
+        return data if data else {}
 
 
 def _write_json(obj: dict[str, Any]) -> None:
+    with _LOCAL_RW_LOCK:
+        _ensure_files()
+        _acquire_file_lock(_STORAGE_LOCK_FILE)
+        try:
+            safe_obj = dict(obj)
+            safe_obj[_UPDATED_TS_KEY] = int(time.time())
+            payload = json.dumps(safe_obj, ensure_ascii=False)
+            tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
+            tmp.write_text(payload, encoding="utf-8")
+            tmp.replace(_BINDINGS_FILE)
+        finally:
+            _release_file_lock(_STORAGE_LOCK_FILE)
+
+
+def _acquire_file_lock(path: Path, *, timeout_sec: float = 10.0) -> None:
+    started = time.time()
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode("utf-8"))
+            os.close(fd)
+            return
+        except FileExistsError:
+            if time.time() - started >= timeout_sec:
+                raise RuntimeError(f"Storage lock timeout: {path}")
+            time.sleep(0.05)
+
+
+def _release_file_lock(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def acquire_instance_lock_or_raise() -> None:
     _ensure_files()
-    safe_obj = dict(obj)
-    safe_obj[_UPDATED_TS_KEY] = int(time.time())
-    payload = json.dumps(safe_obj, ensure_ascii=False)
-    tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
-    tmp.write_text(payload, encoding="utf-8")
-    tmp.replace(_BINDINGS_FILE)
+    _acquire_file_lock(_INSTANCE_LOCK_FILE, timeout_sec=0.2)
+
+
+def release_instance_lock() -> None:
+    _release_file_lock(_INSTANCE_LOCK_FILE)
 
 
 def set_destination_channel_id(*, guild_id: int, channel_id: int) -> None:
