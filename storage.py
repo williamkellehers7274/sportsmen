@@ -8,8 +8,27 @@ from pathlib import Path
 from typing import Any
 
 
-_DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
-_DATA_DIR = Path(os.getenv("BOT_DATA_DIR", str(_DEFAULT_DATA_DIR))).expanduser()
+def _resolve_data_dir() -> Path:
+    env_dir = os.getenv("BOT_DATA_DIR", "").strip()
+    if env_dir:
+        return Path(env_dir).expanduser()
+
+    # Try common persistent locations used by container hostings.
+    for candidate in (Path("/data/bot-carti"), Path("/data")):
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / ".write_test"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+            return candidate
+        except Exception:
+            continue
+
+    # Fallback to project-local folder (works locally, but may be ephemeral in containers).
+    return Path(__file__).resolve().parent / "data"
+
+
+_DATA_DIR = _resolve_data_dir()
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
 _DB_FILE = _DATA_DIR / "storage.db"
 _STATE_ROW_ID = 1
@@ -18,31 +37,26 @@ _UPDATED_TS_KEY = "__storage_updated_ts"
 
 def _ensure_files() -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if _BINDINGS_FILE.exists():
+        return
+    # One-time migration from legacy SQLite store into JSON.
+    sqlite_data = _read_sqlite_payload()
+    initial = sqlite_data if isinstance(sqlite_data, dict) else {}
+    if _UPDATED_TS_KEY not in initial:
+        initial[_UPDATED_TS_KEY] = int(time.time())
+    try:
+        _BINDINGS_FILE.write_text(json.dumps(initial, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _read_sqlite_payload() -> dict[str, Any]:
+    if not _DB_FILE.exists():
+        return {}
     with sqlite3.connect(_DB_FILE) as conn:
         conn.execute(
             "CREATE TABLE IF NOT EXISTS storage_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)"
         )
-        row = conn.execute("SELECT payload FROM storage_state WHERE id = ?", (_STATE_ROW_ID,)).fetchone()
-        if row is None:
-            # One-time migration from legacy JSON file if it exists.
-            initial_payload = "{}"
-            if _BINDINGS_FILE.exists():
-                try:
-                    data = json.loads(_BINDINGS_FILE.read_text(encoding="utf-8") or "{}")
-                    if isinstance(data, dict):
-                        initial_payload = json.dumps(data, ensure_ascii=False)
-                except Exception:
-                    initial_payload = "{}"
-            conn.execute(
-                "INSERT INTO storage_state (id, payload) VALUES (?, ?)",
-                (_STATE_ROW_ID, initial_payload),
-            )
-            conn.commit()
-
-
-def _read_sqlite_payload() -> dict[str, Any]:
-    _ensure_files()
-    with sqlite3.connect(_DB_FILE) as conn:
         row = conn.execute("SELECT payload FROM storage_state WHERE id = ?", (_STATE_ROW_ID,)).fetchone()
     payload = row[0] if row else "{}"
     try:
@@ -70,34 +84,15 @@ def _payload_updated_ts(data: dict[str, Any]) -> int:
 
 
 def _read_json() -> dict[str, Any]:
-    bindings_data = _read_bindings_payload()
+    _ensure_files()
+    data = _read_bindings_payload()
+    if data:
+        return data
+    # Fallback: if JSON got wiped, recover from old SQLite once.
     sqlite_data = _read_sqlite_payload()
-
-    sqlite_ts = _payload_updated_ts(sqlite_data)
-    bindings_ts = _payload_updated_ts(bindings_data)
-
-    # JSON is canonical now. If it exists, use it first and mirror to SQLite.
-    if bindings_data:
-        if bindings_ts >= sqlite_ts:
-            _write_json(bindings_data)
-            return bindings_data
-        # SQLite is newer -> recover JSON mirror and still return freshest.
-        if sqlite_data:
-            try:
-                _BINDINGS_FILE.write_text(json.dumps(sqlite_data, ensure_ascii=False), encoding="utf-8")
-            except Exception:
-                pass
-            return sqlite_data
-        return bindings_data
-
-    # No JSON yet: fallback to SQLite and create JSON mirror.
     if sqlite_data:
-        try:
-            _BINDINGS_FILE.write_text(json.dumps(sqlite_data, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass
+        _write_json(sqlite_data)
         return sqlite_data
-
     return {}
 
 
@@ -106,16 +101,10 @@ def _write_json(obj: dict[str, Any]) -> None:
     safe_obj = dict(obj)
     safe_obj[_UPDATED_TS_KEY] = int(time.time())
     payload = json.dumps(safe_obj, ensure_ascii=False)
-    with sqlite3.connect(_DB_FILE) as conn:
-        conn.execute(
-            "INSERT INTO storage_state (id, payload) VALUES (?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
-            (_STATE_ROW_ID, payload),
-        )
-        conn.commit()
-    # Keep JSON mirror up to date so data survives environments where SQLite is ephemeral.
     try:
-        _BINDINGS_FILE.write_text(payload, encoding="utf-8")
+        tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        tmp.replace(_BINDINGS_FILE)
     except Exception:
         pass
 
