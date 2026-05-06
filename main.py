@@ -5890,7 +5890,13 @@ async def bindings_summary(interaction: discord.Interaction):
         return
 
     # Команда может собирать много данных, поэтому сразу подтверждаем interaction.
-    await interaction.response.defer(ephemeral=True)
+    try:
+        await interaction.response.defer(ephemeral=True)
+    except discord.NotFound:
+        # Interaction token already expired; avoid crashing command handler.
+        return
+    except discord.HTTPException:
+        return
 
     guild = interaction.guild
 
@@ -6025,7 +6031,12 @@ async def bindings_summary(interaction: discord.Interaction):
             e.add_field(name=n, value=v or "—", inline=False)
         embeds.append(e)
 
-    await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
+    try:
+        await interaction.followup.send(embeds=embeds[:10], ephemeral=True)
+    except discord.NotFound:
+        return
+    except discord.HTTPException:
+        return
 
 
 class _DailyMessageTextModal(discord.ui.Modal):
