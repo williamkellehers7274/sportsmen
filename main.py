@@ -580,6 +580,8 @@ class Bot(discord.Client):
         self.add_view(ShopPanelView())
         self.add_view(ShopOrderReviewView())
         self.add_view(ReportPanelView())
+        self.add_view(ReportVzhPanelView())
+        self.add_view(ReportMpPanelView())
         self.add_view(ReportReviewView())
         self.add_view(PromoPanelView())
         self.add_view(PromoReviewView())
@@ -3081,6 +3083,131 @@ class ReportTypeSelect(discord.ui.Select):
                 pass
 
 
+def _build_quick_report_embed(
+    *,
+    title: str,
+    author: discord.abc.User,
+    rows: list[tuple[str, str]],
+) -> discord.Embed:
+    body_lines: list[str] = [f"**Отправил:** {author.mention}"]
+    for name, value in rows:
+        body_lines.append(f"**{name}:** {value.strip() or '—'}")
+    e = discord.Embed(
+        title=title,
+        description="\n".join(body_lines),
+        color=discord.Color.dark_gray(),
+        timestamp=dt.datetime.now(dt.timezone.utc),
+    )
+    e.set_footer(text=f"{author.display_name} | {author.id}")
+    return e
+
+
+class ReportVzhModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Отчет ВЗХ")
+        self.report_date = discord.ui.TextInput(
+            label="1. За какое число",
+            placeholder="06.05.2026",
+            required=True,
+            max_length=32,
+        )
+        self.fraction = discord.ui.TextInput(
+            label="2. За какую фракцию",
+            placeholder="YAK",
+            required=True,
+            max_length=64,
+        )
+        self.materials = discord.ui.TextInput(
+            label="3. ВЗХ (количество материалов)",
+            placeholder="5к",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.report_date)
+        self.add_item(self.fraction)
+        self.add_item(self.materials)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message("Отправка доступна только в текстовом канале.", ephemeral=True)
+            return
+        e = _build_quick_report_embed(
+            title="— ・ Отчет ВЗХ",
+            author=interaction.user,
+            rows=[
+                ("За какое число", str(self.report_date.value)),
+                ("За какую фракцию", str(self.fraction.value)),
+                ("ВЗХ (количество материалов)", str(self.materials.value)),
+            ],
+        )
+        await interaction.channel.send(embed=e)
+        await interaction.response.send_message("Отчет ВЗХ отправлен.", ephemeral=True)
+
+
+class ReportMpModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="Отчет МП")
+        self.report_date = discord.ui.TextInput(
+            label="1. За какое число",
+            placeholder="06.05.2026",
+            required=True,
+            max_length=32,
+        )
+        self.mp_type = discord.ui.TextInput(
+            label="2. МП (тип / событие)",
+            placeholder="ГШ / Флаг Вагонетка",
+            required=True,
+            max_length=128,
+        )
+        self.fraction = discord.ui.TextInput(
+            label="3. За какую фракцию",
+            placeholder="YAK",
+            required=True,
+            max_length=64,
+        )
+        self.materials = discord.ui.TextInput(
+            label="4. Количество получиных материалов",
+            placeholder="2к",
+            required=True,
+            max_length=64,
+        )
+        self.result = discord.ui.TextInput(
+            label="5. Итог",
+            placeholder="Win / Lose",
+            required=True,
+            max_length=64,
+        )
+        self.add_item(self.report_date)
+        self.add_item(self.mp_type)
+        self.add_item(self.fraction)
+        self.add_item(self.materials)
+        self.add_item(self.result)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+            return
+        if not isinstance(interaction.channel, (discord.TextChannel, discord.Thread)):
+            await interaction.response.send_message("Отправка доступна только в текстовом канале.", ephemeral=True)
+            return
+        e = _build_quick_report_embed(
+            title="— ・ Отчет МП",
+            author=interaction.user,
+            rows=[
+                ("За какое число", str(self.report_date.value)),
+                ("МП (тип / событие)", str(self.mp_type.value)),
+                ("За какую фракцию", str(self.fraction.value)),
+                ("Количество получиных материалов", str(self.materials.value)),
+                ("Итог", str(self.result.value)),
+            ],
+        )
+        await interaction.channel.send(embed=e)
+        await interaction.response.send_message("Отчет МП отправлен.", ephemeral=True)
+
+
 class ReportPanelView(discord.ui.View):
     def __init__(self, *, guild_id: int | None = None):
         super().__init__(timeout=None)
@@ -3122,6 +3249,28 @@ class ReportPanelView(discord.ui.View):
             color=discord.Color.dark_gray(),
         )
         await interaction.response.send_message(embed=e, ephemeral=True)
+
+
+def _build_quick_panel_embed(title: str) -> discord.Embed:
+    return discord.Embed(description=title, color=discord.Color.dark_gray())
+
+
+class ReportVzhPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="+", style=discord.ButtonStyle.success, custom_id="report_vzh_panel_plus")
+    async def plus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ReportVzhModal())
+
+
+class ReportMpPanelView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(label="+", style=discord.ButtonStyle.success, custom_id="report_mp_panel_plus")
+    async def plus(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.send_modal(ReportMpModal())
 
 
 class ReportRejectReasonModal(discord.ui.Modal):
@@ -5454,6 +5603,30 @@ async def reports_panel(interaction: discord.Interaction, panel_channel: discord
         f"Панель отчётов {'обновлена' if edited else 'отправлена'} в {panel_channel.mention}.",
         ephemeral=True,
     )
+
+
+@bot.tree.command(name="панель-взх", description="Отправить отдельную панель отчета ВЗХ")
+@app_commands.describe(panel_channel="Канал, куда отправить панель ВЗХ")
+@app_commands.default_permissions(administrator=True)
+async def report_vzh_panel(interaction: discord.Interaction, panel_channel: discord.TextChannel):
+    if interaction.guild is None:
+        await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+        return
+    embed = _build_quick_panel_embed("Отчёт: ВЗХ")
+    await panel_channel.send(embed=embed, view=ReportVzhPanelView())
+    await interaction.response.send_message(f"Панель ВЗХ отправлена в {panel_channel.mention}.", ephemeral=True)
+
+
+@bot.tree.command(name="панель-мп", description="Отправить отдельную панель отчета МП")
+@app_commands.describe(panel_channel="Канал, куда отправить панель МП")
+@app_commands.default_permissions(administrator=True)
+async def report_mp_panel(interaction: discord.Interaction, panel_channel: discord.TextChannel):
+    if interaction.guild is None:
+        await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
+        return
+    embed = _build_quick_panel_embed("Отчёт: МП")
+    await panel_channel.send(embed=embed, view=ReportMpPanelView())
+    await interaction.response.send_message(f"Панель МП отправлена в {panel_channel.mention}.", ephemeral=True)
 
 
 @bot.tree.command(name="панель-атт-дефф", description="Отправить панель ATT/DEFF с текущим КД")
