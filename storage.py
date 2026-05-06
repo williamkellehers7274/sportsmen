@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import sqlite3
 import time
 from pathlib import Path
 from typing import Any
@@ -30,52 +29,14 @@ def _resolve_data_dir() -> Path:
 
 _DATA_DIR = _resolve_data_dir()
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
-_DB_FILE = _DATA_DIR / "storage.db"
-_STATE_ROW_ID = 1
 _UPDATED_TS_KEY = "__storage_updated_ts"
-_SQLITE_IMPORT_MARKER = _DATA_DIR / ".sqlite_import_done"
 
 
 def _ensure_files() -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
-    # One-time forced import from legacy SQLite into JSON.
-    # Needed to migrate real production data when switching storage backend.
-    if not _SQLITE_IMPORT_MARKER.exists():
-        sqlite_data = _read_sqlite_payload()
-        if isinstance(sqlite_data, dict) and sqlite_data:
-            if _UPDATED_TS_KEY not in sqlite_data:
-                sqlite_data[_UPDATED_TS_KEY] = int(time.time())
-            try:
-                _BINDINGS_FILE.write_text(json.dumps(sqlite_data, ensure_ascii=False), encoding="utf-8")
-            except Exception:
-                pass
-        try:
-            _SQLITE_IMPORT_MARKER.write_text("ok", encoding="utf-8")
-        except Exception:
-            pass
     if _BINDINGS_FILE.exists():
         return
-    # If no JSON and no usable SQLite, initialize empty JSON.
-    try:
-        _BINDINGS_FILE.write_text(json.dumps({_UPDATED_TS_KEY: int(time.time())}, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
-
-
-def _read_sqlite_payload() -> dict[str, Any]:
-    if not _DB_FILE.exists():
-        return {}
-    with sqlite3.connect(_DB_FILE) as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS storage_state (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL)"
-        )
-        row = conn.execute("SELECT payload FROM storage_state WHERE id = ?", (_STATE_ROW_ID,)).fetchone()
-    payload = row[0] if row else "{}"
-    try:
-        data = json.loads(payload or "{}")
-    except json.JSONDecodeError:
-        return {}
-    return data if isinstance(data, dict) else {}
+    _BINDINGS_FILE.write_text(json.dumps({_UPDATED_TS_KEY: int(time.time())}, ensure_ascii=False), encoding="utf-8")
 
 
 def _read_bindings_payload() -> dict[str, Any]:
@@ -98,14 +59,7 @@ def _payload_updated_ts(data: dict[str, Any]) -> int:
 def _read_json() -> dict[str, Any]:
     _ensure_files()
     data = _read_bindings_payload()
-    if data:
-        return data
-    # Fallback: if JSON got wiped, recover from old SQLite once.
-    sqlite_data = _read_sqlite_payload()
-    if sqlite_data:
-        _write_json(sqlite_data)
-        return sqlite_data
-    return {}
+    return data if data else {}
 
 
 def _write_json(obj: dict[str, Any]) -> None:
@@ -113,12 +67,9 @@ def _write_json(obj: dict[str, Any]) -> None:
     safe_obj = dict(obj)
     safe_obj[_UPDATED_TS_KEY] = int(time.time())
     payload = json.dumps(safe_obj, ensure_ascii=False)
-    try:
-        tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
-        tmp.write_text(payload, encoding="utf-8")
-        tmp.replace(_BINDINGS_FILE)
-    except Exception:
-        pass
+    tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(_BINDINGS_FILE)
 
 
 def set_destination_channel_id(*, guild_id: int, channel_id: int) -> None:
