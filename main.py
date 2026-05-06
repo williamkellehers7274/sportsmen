@@ -6791,30 +6791,8 @@ async def on_member_join(member: discord.Member):
 
 @bot.event
 async def on_member_update(before: discord.Member, after: discord.Member):
-    if after.guild is None or after.bot:
-        return
-
-    before_role_ids = {r.id for r in before.roles}
-    added_roles = [r for r in after.roles if r.id not in before_role_ids]
-    if not added_roles:
-        return
-
-    actor = await _find_recent_audit_actor(
-        guild=after.guild,
-        action=discord.AuditLogAction.member_role_update,
-        target_id=after.id,
-        max_age_s=20,
-    )
-    if actor is None:
-        return
-
-    for role in added_roles:
-        await _send_action_log(
-            guild=after.guild,
-            action_name=f"Выдал роль: {role.name}",
-            actor=actor,
-            target=after,
-        )
+    # Логи ролей отключены: оставляем только вход/кик/бан.
+    return
 
 
 @bot.event
@@ -6882,13 +6860,9 @@ async def on_member_remove(member: discord.Member):
         target_id=member.id,
     )
     if actor is None:
-        await _send_join_leave_log(
-            guild=member.guild,
-            action_name="Вышел с сервера",
-            member=member,
-        )
+        # Добровольный выход не логируем.
         return
-    await _send_action_log(guild=member.guild, action_name="Исключение с сервера", actor=actor, target=member)
+    await _send_action_log(guild=member.guild, action_name="Кик с сервера", actor=actor, target=member)
 
 
 @bot.event
@@ -6897,48 +6871,6 @@ async def on_voice_state_update(member: discord.Member, before: discord.VoiceSta
         return
 
     guild = member.guild
-    if before.mute != after.mute:
-        actor = await _find_recent_audit_actor(
-            guild=guild,
-            action=discord.AuditLogAction.member_update,
-            target_id=member.id,
-            max_age_s=12,
-        )
-        if actor is not None:
-            await _send_action_log(
-                guild=guild,
-                action_name="Отключил/включил микрофон (сервером)",
-                actor=actor,
-                target=member,
-            )
-    if before.deaf != after.deaf:
-        actor = await _find_recent_audit_actor(
-            guild=guild,
-            action=discord.AuditLogAction.member_update,
-            target_id=member.id,
-            max_age_s=12,
-        )
-        if actor is not None:
-            await _send_action_log(
-                guild=guild,
-                action_name="Отключил/включил наушники (сервером)",
-                actor=actor,
-                target=member,
-            )
-    if before.channel is not None and after.channel is None:
-        actor = await _find_recent_audit_actor(
-            guild=guild,
-            action=discord.AuditLogAction.member_disconnect,
-            target_id=member.id,
-            max_age_s=12,
-        )
-        if actor is not None and actor.id != member.id:
-            await _send_action_log(
-                guild=guild,
-                action_name="Кик из голосового канала",
-                actor=actor,
-                target=member,
-            )
 
     # Удаляем пустые временные комнаты, созданные ботом.
     if before.channel is not None and len(before.channel.members) == 0:
