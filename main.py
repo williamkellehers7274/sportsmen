@@ -5951,9 +5951,25 @@ async def bindings_summary(interaction: discord.Interaction):
         get_attack_def_panel_message_id,
         get_contracts_panel_message_id,
         get_voice_hub_panel_message_id,
+        get_storage_debug_info,
+        get_storage_guild_key_count,
     )
 
     fields: list[tuple[str, str]] = []
+    try:
+        storage_info = get_storage_debug_info()
+    except Exception:
+        storage_info = {}
+
+    fields.append(("Guild ID", f"`{guild.id}`"))
+    fields.append(
+        (
+            "Storage",
+            f"`{storage_info.get('bindings_file', '?')}`\n"
+            f"guild-keys: `{get_storage_guild_key_count(guild_id=guild.id)}` "
+            f"total-keys: `{storage_info.get('current_keys', '?')}`",
+        )
+    )
 
     fields.append(("Заявки → канал", _ch(get_destination_channel_id(guild_id=guild.id))))
     fields.append(("Отчёты → канал", _ch(get_reports_channel_id(guild_id=guild.id))))
