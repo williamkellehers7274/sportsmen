@@ -45,6 +45,16 @@ def _read_json() -> dict[str, Any]:
         data = json.loads(payload or "{}")
     except json.JSONDecodeError:
         data = {}
+    if isinstance(data, dict) and data:
+        return data
+    # Fallback to legacy JSON backup (useful if SQLite was reset/recreated).
+    if _BINDINGS_FILE.exists():
+        try:
+            legacy = json.loads(_BINDINGS_FILE.read_text(encoding="utf-8") or "{}")
+            if isinstance(legacy, dict):
+                return legacy
+        except Exception:
+            pass
     return data if isinstance(data, dict) else {}
 
 
@@ -58,6 +68,11 @@ def _write_json(obj: dict[str, Any]) -> None:
             (_STATE_ROW_ID, payload),
         )
         conn.commit()
+    # Keep JSON mirror up to date so data survives environments where SQLite is ephemeral.
+    try:
+        _BINDINGS_FILE.write_text(payload, encoding="utf-8")
+    except Exception:
+        pass
 
 
 def set_destination_channel_id(*, guild_id: int, channel_id: int) -> None:
