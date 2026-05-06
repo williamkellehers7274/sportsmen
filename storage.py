@@ -12,6 +12,10 @@ def _resolve_data_dir() -> Path:
     if env_dir:
         return Path(env_dir).expanduser()
 
+    # On Windows, prefer project-local storage by default.
+    if os.name == "nt":
+        return Path(__file__).resolve().parent / "data"
+
     # Try common persistent locations used by container hostings.
     for candidate in (Path("/data/bot-carti"), Path("/data")):
         try:
@@ -62,6 +66,12 @@ def _read_project_bindings_payload() -> dict[str, Any]:
     return raw if isinstance(raw, dict) else {}
 
 
+def _payload_without_meta(data: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {}
+    return {k: v for k, v in data.items() if k != _UPDATED_TS_KEY}
+
+
 def _payload_updated_ts(data: dict[str, Any]) -> int:
     try:
         return int(data.get(_UPDATED_TS_KEY, 0))
@@ -72,15 +82,15 @@ def _payload_updated_ts(data: dict[str, Any]) -> int:
 def _read_json() -> dict[str, Any]:
     _ensure_files()
     data = _read_bindings_payload()
-    if data:
+    if _payload_without_meta(data):
         return data
 
     # Safety net: if runtime data dir is different and empty, recover from project-local JSON once.
     project_data = _read_project_bindings_payload()
-    if project_data:
+    if _payload_without_meta(project_data):
         _write_json(project_data)
         return project_data
-    return {}
+    return data if data else {}
 
 
 def _write_json(obj: dict[str, Any]) -> None:
@@ -1596,4 +1606,17 @@ def get_tg_bridge_pair_state() -> dict[str, Any]:
     data = _read_json()
     raw = data.get("runtime:tg_bridge_pair_state", {})
     return raw if isinstance(raw, dict) else {}
+
+
+def get_storage_debug_info() -> dict[str, Any]:
+    _ensure_files()
+    current = _read_bindings_payload()
+    project = _read_project_bindings_payload()
+    return {
+        "data_dir": str(_DATA_DIR),
+        "bindings_file": str(_BINDINGS_FILE),
+        "project_bindings_file": str(_PROJECT_BINDINGS_FILE),
+        "current_keys": len(_payload_without_meta(current)),
+        "project_keys": len(_payload_without_meta(project)),
+    }
 
