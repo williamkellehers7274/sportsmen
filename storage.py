@@ -1620,3 +1620,17 @@ def get_storage_debug_info() -> dict[str, Any]:
         "project_keys": len(_payload_without_meta(project)),
     }
 
+
+def get_storage_guild_key_count(*, guild_id: int) -> int:
+    data = _read_json()
+    prefix = f"{int(guild_id)}"
+    count = 0
+    for key in data.keys():
+        try:
+            skey = str(key)
+        except Exception:
+            continue
+        if skey == prefix or skey.startswith(prefix + ":"):
+            count += 1
+    return count
+
