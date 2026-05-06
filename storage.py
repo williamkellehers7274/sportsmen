@@ -34,6 +34,7 @@ def _resolve_data_dir() -> Path:
 
 _DATA_DIR = _resolve_data_dir()
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
+_BINDINGS_BACKUP_FILE = _DATA_DIR / "bindings.backup.json"
 _PROJECT_BINDINGS_FILE = Path(__file__).resolve().parent / "data" / "bindings.json"
 _STORAGE_LOCK_FILE = _DATA_DIR / ".storage.lock"
 _INSTANCE_LOCK_FILE = _DATA_DIR / ".bot.instance.lock"
@@ -43,6 +44,12 @@ _LOCAL_RW_LOCK = threading.RLock()
 
 def _ensure_files() -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if not _BINDINGS_FILE.exists() and _BINDINGS_BACKUP_FILE.exists():
+        try:
+            _BINDINGS_FILE.write_text(_BINDINGS_BACKUP_FILE.read_text(encoding="utf-8"), encoding="utf-8")
+            return
+        except Exception:
+            pass
     if _BINDINGS_FILE.exists():
         return
     _BINDINGS_FILE.write_text(json.dumps({_UPDATED_TS_KEY: int(time.time())}, ensure_ascii=False), encoding="utf-8")
@@ -53,6 +60,16 @@ def _read_bindings_payload() -> dict[str, Any]:
         return {}
     try:
         raw = json.loads(_BINDINGS_FILE.read_text(encoding="utf-8") or "{}")
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _read_backup_payload() -> dict[str, Any]:
+    if not _BINDINGS_BACKUP_FILE.exists():
+        return {}
+    try:
+        raw = json.loads(_BINDINGS_BACKUP_FILE.read_text(encoding="utf-8") or "{}")
     except Exception:
         return {}
     return raw if isinstance(raw, dict) else {}
@@ -87,6 +104,21 @@ def _read_json() -> dict[str, Any]:
     with _LOCAL_RW_LOCK:
         _ensure_files()
         data = _read_bindings_payload()
+        backup_data = _read_backup_payload()
+
+        # Anti-rollback: if backup is newer, recover main bindings from backup.
+        if _payload_without_meta(backup_data):
+            main_ts = _payload_updated_ts(data)
+            backup_ts = _payload_updated_ts(backup_data)
+            if backup_ts > main_ts:
+                try:
+                    tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
+                    tmp.write_text(json.dumps(backup_data, ensure_ascii=False), encoding="utf-8")
+                    tmp.replace(_BINDINGS_FILE)
+                    data = backup_data
+                except Exception:
+                    pass
+
         if _payload_without_meta(data):
             return data
 
@@ -109,6 +141,7 @@ def _write_json(obj: dict[str, Any]) -> None:
             tmp = _BINDINGS_FILE.with_suffix(".json.tmp")
             tmp.write_text(payload, encoding="utf-8")
             tmp.replace(_BINDINGS_FILE)
+            _BINDINGS_BACKUP_FILE.write_text(payload, encoding="utf-8")
         finally:
             _release_file_lock(_STORAGE_LOCK_FILE)
 
