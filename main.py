@@ -574,9 +574,12 @@ class Bot(discord.Client):
                     continue
                 GIVEAWAYS[_giveaway_key(guild_id=guild.id, message_id=message_id)] = state
 
-        # Persistent view fallback for panels created with env-configured destination
-        if config.APPLICATION_CHANNEL_ID:
-            self.add_view(ApplicationPanelView(destination_channel_id=config.APPLICATION_CHANNEL_ID))
+        # Re-register persistent application panel views using stored per-guild destination.
+        # This avoids fallback to stale env channel after restart.
+        for guild in list(self.guilds):
+            destination_id = get_destination_channel_id(guild_id=guild.id)
+            if destination_id:
+                self.add_view(ApplicationPanelView(destination_channel_id=destination_id))
         self.add_view(AFKPanelView())
         self.add_view(VacationPanelView())
         self.add_view(VzpMapView())
@@ -6662,10 +6665,10 @@ async def applications_panel(interaction: discord.Interaction, panel_channel: di
         await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
         return
 
-    destination_id = get_destination_channel_id(guild_id=interaction.guild.id) or config.APPLICATION_CHANNEL_ID
+    destination_id = get_destination_channel_id(guild_id=interaction.guild.id)
     if not destination_id:
         await interaction.response.send_message(
-            "Сначала сделай `/привязка-заявок` и выбери канал для заявок (или заполни `APPLICATION_CHANNEL_ID` в `.env`).",
+            "Сначала сделай `/привязка-заявок` и выбери канал для заявок.",
             ephemeral=True,
         )
         return
