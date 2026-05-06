@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import time
 from pathlib import Path
 from typing import Any
 
 
-_DATA_DIR = Path(__file__).resolve().parent / "data"
+_DEFAULT_DATA_DIR = Path(__file__).resolve().parent / "data"
+_DATA_DIR = Path(os.getenv("BOT_DATA_DIR", str(_DEFAULT_DATA_DIR))).expanduser()
 _BINDINGS_FILE = _DATA_DIR / "bindings.json"
 _DB_FILE = _DATA_DIR / "storage.db"
 _STATE_ROW_ID = 1
@@ -68,21 +70,34 @@ def _payload_updated_ts(data: dict[str, Any]) -> int:
 
 
 def _read_json() -> dict[str, Any]:
-    sqlite_data = _read_sqlite_payload()
     bindings_data = _read_bindings_payload()
+    sqlite_data = _read_sqlite_payload()
 
     sqlite_ts = _payload_updated_ts(sqlite_data)
     bindings_ts = _payload_updated_ts(bindings_data)
 
-    # Prefer the freshest source by explicit timestamp.
-    if bindings_ts > sqlite_ts and bindings_data:
-        _write_json(bindings_data)
-        return bindings_data
-    if sqlite_data:
-        return sqlite_data
+    # JSON is canonical now. If it exists, use it first and mirror to SQLite.
     if bindings_data:
-        _write_json(bindings_data)
+        if bindings_ts >= sqlite_ts:
+            _write_json(bindings_data)
+            return bindings_data
+        # SQLite is newer -> recover JSON mirror and still return freshest.
+        if sqlite_data:
+            try:
+                _BINDINGS_FILE.write_text(json.dumps(sqlite_data, ensure_ascii=False), encoding="utf-8")
+            except Exception:
+                pass
+            return sqlite_data
         return bindings_data
+
+    # No JSON yet: fallback to SQLite and create JSON mirror.
+    if sqlite_data:
+        try:
+            _BINDINGS_FILE.write_text(json.dumps(sqlite_data, ensure_ascii=False), encoding="utf-8")
+        except Exception:
+            pass
+        return sqlite_data
+
     return {}
 
 
