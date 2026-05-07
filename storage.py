@@ -142,6 +142,17 @@ def _write_json(obj: dict[str, Any]) -> None:
             tmp.write_text(payload, encoding="utf-8")
             tmp.replace(_BINDINGS_FILE)
             _BINDINGS_BACKUP_FILE.write_text(payload, encoding="utf-8")
+            # Keep project-local JSON in sync as well.
+            # Otherwise, if runtime storage path differs and is reset,
+            # fallback restore from project file may roll bindings back.
+            try:
+                if _PROJECT_BINDINGS_FILE.resolve() != _BINDINGS_FILE.resolve():
+                    _PROJECT_BINDINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    project_tmp = _PROJECT_BINDINGS_FILE.with_suffix(".json.tmp")
+                    project_tmp.write_text(payload, encoding="utf-8")
+                    project_tmp.replace(_PROJECT_BINDINGS_FILE)
+            except Exception:
+                pass
         finally:
             _release_file_lock(_STORAGE_LOCK_FILE)
 
