@@ -180,7 +180,30 @@ def _release_file_lock(path: Path) -> None:
 
 def acquire_instance_lock_or_raise() -> None:
     _ensure_files()
-    _acquire_file_lock(_INSTANCE_LOCK_FILE, timeout_sec=0.2)
+    try:
+        _acquire_file_lock(_INSTANCE_LOCK_FILE, timeout_sec=0.2)
+        return
+    except RuntimeError:
+        # In container environments with persistent volumes, the process can
+        # be restarted without running graceful shutdown hooks, leaving a stale
+        # instance lock file behind. If the lock file is not fresh, drop it and
+        # retry once.
+        pass
+
+    try:
+        stat = _INSTANCE_LOCK_FILE.stat()
+        lock_age_sec = max(0.0, time.time() - stat.st_mtime)
+    except Exception:
+        lock_age_sec = 0.0
+
+    # Keep protection against real duplicate instances, but auto-recover from
+    # stale lock leftovers.
+    if lock_age_sec >= 30.0:
+        _release_file_lock(_INSTANCE_LOCK_FILE)
+        _acquire_file_lock(_INSTANCE_LOCK_FILE, timeout_sec=0.5)
+        return
+
+    raise RuntimeError(f"Second bot instance detected or stale lock: {_INSTANCE_LOCK_FILE}")
 
 
 def release_instance_lock() -> None:
