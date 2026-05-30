@@ -128,6 +128,7 @@ from ui import (
     ApplicationReceiptPanelView,
     application_receipt_status_map,
 )
+from map_call import register_map_call_commands, setup_map_call
 
 EMBED_COLOR = discord.Color.from_rgb(0, 0, 0)
 # Единый цвет всех embed'ов (чёрная полоса слева).
@@ -598,6 +599,7 @@ class Bot(discord.Client):
         self.add_view(ContractReviewView())
         self.add_view(ApplicationReceiptPanelView())
         self.add_view(PrivateVoiceHubView())
+        setup_map_call(self)
 
         if config.GUILD_ID:
             guild = discord.Object(id=config.GUILD_ID)
@@ -830,6 +832,7 @@ class Bot(discord.Client):
 
 
 bot = Bot()
+register_map_call_commands(bot.tree)
 
 
 def _extract_target(raw: str | None) -> int | None:
