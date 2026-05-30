@@ -50,11 +50,25 @@ def _occupied_count(slots: dict[str, int]) -> int:
     return len(slots)
 
 
-def _build_embed(*, total: int, slots: dict[str, int]) -> discord.Embed:
+def _format_slots_list(*, total: int, slots: dict[str, int], guild: discord.Guild | None) -> str:
+    lines: list[str] = []
+    for place in range(1, total + 1):
+        uid = slots.get(str(place))
+        if uid is None:
+            value = "Пусто"
+        else:
+            member = guild.get_member(uid) if guild is not None else None
+            value = member.mention if member is not None else f"<@{uid}>"
+        lines.append(f"{place}- {value}")
+    return "\n".join(lines)
+
+
+def _build_embed(*, total: int, slots: dict[str, int], guild: discord.Guild | None = None) -> discord.Embed:
     taken = _occupied_count(slots)
+    slots_text = _format_slots_list(total=total, slots=slots, guild=guild)
     e = discord.Embed(
         title="🗺️ Расстановка по местам",
-        description=f"📍 Места ({taken}/{total})",
+        description=f"📍 Места ({taken}/{total})\n\n**Кто где:**\n{slots_text}",
     )
     e.set_footer(text="Нажми номер, чтобы занять место. Свой номер — чтобы освободить.")
     return e
@@ -153,7 +167,9 @@ async def refresh_panel(client: discord.Client, panel: dict[str, Any]) -> None:
 
     total = int(panel.get("total_slots", 0))
     slots: dict[str, int] = panel.get("slots") or {}
-    embed = _build_embed(total=total, slots=slots)
+    guild_id = int(panel.get("guild_id", 0))
+    guild = client.get_guild(guild_id) if guild_id else None
+    embed = _build_embed(total=total, slots=slots, guild=guild)
 
     try:
         primary = await ch.fetch_message(primary_id)
@@ -220,7 +236,7 @@ def register_map_call_commands(tree: app_commands.CommandTree) -> None:
 
         total = int(мест)
         slots: dict[str, int] = {}
-        embed = _build_embed(total=total, slots=slots)
+        embed = _build_embed(total=total, slots=slots, guild=interaction.guild)
         filename = карта.filename or "map.png"
         file = discord.File(io.BytesIO(image_bytes), filename=filename)
 
