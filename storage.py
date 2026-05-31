@@ -1741,3 +1741,49 @@ def get_storage_guild_key_count(*, guild_id: int) -> int:
             count += 1
     return count
 
+
+def _call_final_key(message_id: int) -> str:
+    return f"call_final:{int(message_id)}"
+
+
+def set_call_final_meta(
+    *,
+    message_id: int,
+    applicant_id: int,
+    ticket_id: int,
+    application_type: str,
+    original_channel_id: int,
+    original_message_id: int,
+) -> None:
+    data = _read_json()
+    data[_call_final_key(message_id)] = {
+        "applicant_id": int(applicant_id),
+        "ticket_id": int(ticket_id),
+        "application_type": str(application_type),
+        "original_channel_id": int(original_channel_id),
+        "original_message_id": int(original_message_id),
+    }
+    _write_json(data)
+
+
+def get_call_final_meta(*, message_id: int) -> dict[str, Any] | None:
+    data = _read_json()
+    raw = data.get(_call_final_key(message_id))
+    return raw if isinstance(raw, dict) else None
+
+
+def _sbor_key(*, guild_id: int, message_id: int) -> str:
+    return f"{int(guild_id)}:sbor:{int(message_id)}"
+
+
+def set_sbor_panel_state(*, guild_id: int, message_id: int, state: dict[str, Any]) -> None:
+    data = _read_json()
+    data[_sbor_key(guild_id=guild_id, message_id=message_id)] = state
+    _write_json(data)
+
+
+def get_sbor_panel_state(*, guild_id: int, message_id: int) -> dict[str, Any] | None:
+    data = _read_json()
+    raw = data.get(_sbor_key(guild_id=guild_id, message_id=message_id))
+    return raw if isinstance(raw, dict) else None
+
