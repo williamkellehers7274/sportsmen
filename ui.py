@@ -15,11 +15,35 @@ from storage import (
     get_accept_role_id_for_type,
     get_applications_enabled_for_type,
     get_call_category_id,
+    get_call_final_meta,
     get_destination_channel_id,
     get_ticket_view_role_ids,
     next_ticket_id,
     set_applications_enabled_for_type,
+    set_call_final_meta,
 )
+
+_TICKET_TITLE_RE = re.compile(r"^Заявка #(\d+) — (.+)$", re.IGNORECASE)
+_APPLICANT_ID_RE = re.compile(r"ID:\s*(\d+)", re.IGNORECASE)
+
+
+def parse_application_embed(embed: discord.Embed) -> tuple[int, int, str] | None:
+    title = embed.title or ""
+    m = _TICKET_TITLE_RE.match(title.strip())
+    if not m:
+        return None
+    ticket_id = int(m.group(1))
+    application_type = m.group(2).strip()
+    applicant_id: int | None = None
+    for fld in embed.fields:
+        if fld.name == "Заявитель":
+            im = _APPLICANT_ID_RE.search(fld.value or "")
+            if im:
+                applicant_id = int(im.group(1))
+                break
+    if applicant_id is None:
+        return None
+    return applicant_id, ticket_id, application_type
 
 
 RP_QUESTIONS: list[tuple[str, str]] = [
@@ -298,7 +322,14 @@ class RejectReasonModal(discord.ui.Modal):
 
 
 class ApplicationReviewView(discord.ui.View):
-    def __init__(self, *, applicant_id: int, ticket_id: int, application_type: str, disabled: bool = False):
+    def __init__(
+        self,
+        *,
+        applicant_id: int = 0,
+        ticket_id: int = 0,
+        application_type: str = "",
+        disabled: bool = False,
+    ):
         super().__init__(timeout=None)
         self.applicant_id = applicant_id
         self.ticket_id = ticket_id
@@ -306,6 +337,15 @@ class ApplicationReviewView(discord.ui.View):
         for child in self.children:
             if isinstance(child, discord.ui.Button):
                 child.disabled = disabled
+
+    def _resolve_ticket(self, interaction: discord.Interaction) -> tuple[int, int, str] | None:
+        if self.applicant_id and self.ticket_id and self.application_type:
+            return self.applicant_id, self.ticket_id, self.application_type
+        if interaction.message and interaction.message.embeds:
+            parsed = parse_application_embed(interaction.message.embeds[0])
+            if parsed is not None:
+                return parsed
+        return None
 
     @classmethod
     def disabled(cls, applicant_id: int, ticket_id: int, application_type: str) -> "ApplicationReviewView":
@@ -317,20 +357,29 @@ class ApplicationReviewView(discord.ui.View):
             await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
             return
 
+        resolved = self._resolve_ticket(interaction)
+        if resolved is None:
+            await interaction.response.send_message(
+                "Не удалось прочитать заявку из сообщения.",
+                ephemeral=True,
+            )
+            return
+        applicant_id, ticket_id, application_type = resolved
+
         # Кнопка может выполняться дольше 3 секунд (создание канала/запросы),
         # поэтому сразу подтверждаем interaction, иначе будет "Unknown interaction".
         await interaction.response.defer(ephemeral=True)
 
         guild = interaction.guild
-        applicant = guild.get_member(self.applicant_id)
+        applicant = guild.get_member(applicant_id)
         if applicant is None:
             try:
-                applicant = await guild.fetch_member(self.applicant_id)
+                applicant = await guild.fetch_member(applicant_id)
             except discord.NotFound:
                 applicant = None
 
-        base_name = _safe_channel_name(applicant.display_name if applicant else f"user-{self.applicant_id}")
-        ch_name = f"обзвон-{base_name}-{self.ticket_id}"
+        base_name = _safe_channel_name(applicant.display_name if applicant else f"user-{applicant_id}")
+        ch_name = f"обзвон-{base_name}-{ticket_id}"
 
         # Куда создавать канал обзвона:
         # 1) если админ привязал категорию — используем её
@@ -365,7 +414,7 @@ class ApplicationReviewView(discord.ui.View):
                 name=ch_name[:100],
                 category=category,
                 overwrites=overwrites,
-                reason=f"Обзвон по заявке #{self.ticket_id}",
+                reason=f"Обзвон по заявке #{ticket_id}",
             )
         except discord.Forbidden:
             await interaction.followup.send("Нет прав создавать каналы.", ephemeral=True)
@@ -399,17 +448,27 @@ class ApplicationReviewView(discord.ui.View):
                 await interaction.message.edit(embed=e, view=None)
 
         # В канал обзвона — копию заявки + "Принять/Отказать"
+        original_channel_id = interaction.channel.id if interaction.channel else 0
+        original_message_id = interaction.message.id if interaction.message else 0
         try:
-            await call_channel.send(
-                content=f"Заявка `#{self.ticket_id}` — **{self.application_type}**",
+            call_msg = await call_channel.send(
+                content=f"Заявка `#{ticket_id}` — **{application_type}**",
                 embed=interaction.message.embeds[0] if interaction.message and interaction.message.embeds else None,
                 view=CallFinalView(
-                    applicant_id=self.applicant_id,
-                    ticket_id=self.ticket_id,
-                    application_type=self.application_type,
-                    original_channel_id=interaction.channel.id if interaction.channel else 0,
-                    original_message_id=interaction.message.id if interaction.message else 0,
+                    applicant_id=applicant_id,
+                    ticket_id=ticket_id,
+                    application_type=application_type,
+                    original_channel_id=original_channel_id,
+                    original_message_id=original_message_id,
                 ),
+            )
+            set_call_final_meta(
+                message_id=call_msg.id,
+                applicant_id=applicant_id,
+                ticket_id=ticket_id,
+                application_type=application_type,
+                original_channel_id=original_channel_id,
+                original_message_id=original_message_id,
             )
         except discord.HTTPException:
             pass
@@ -418,11 +477,19 @@ class ApplicationReviewView(discord.ui.View):
 
     @discord.ui.button(label="Отказать", style=discord.ButtonStyle.danger, custom_id="review_reject")
     async def review_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        resolved = self._resolve_ticket(interaction)
+        if resolved is None:
+            await interaction.response.send_message(
+                "Не удалось прочитать заявку из сообщения.",
+                ephemeral=True,
+            )
+            return
+        applicant_id, ticket_id, application_type = resolved
         await interaction.response.send_modal(
             RejectReasonModal(
-                applicant_id=self.applicant_id,
-                ticket_id=self.ticket_id,
-                application_type=self.application_type,
+                applicant_id=applicant_id,
+                ticket_id=ticket_id,
+                application_type=application_type,
             )
         )
 
@@ -491,11 +558,11 @@ class CallRejectReasonModal(discord.ui.Modal):
             await interaction.message.edit(embed=e, view=None)
 
         # И оригинальную заявку тоже обновим (если можем)
-        if self.original_channel_id and self.original_message_id:
+        if original_channel_id and original_message_id:
             try:
-                ch = guild.get_channel(self.original_channel_id)
+                ch = guild.get_channel(original_channel_id)
                 if isinstance(ch, discord.TextChannel):
-                    msg = await ch.fetch_message(self.original_message_id)
+                    msg = await ch.fetch_message(original_message_id)
                     if msg.embeds:
                         e2 = msg.embeds[0]
                         if e2.fields:
@@ -517,11 +584,11 @@ class CallFinalView(discord.ui.View):
     def __init__(
         self,
         *,
-        applicant_id: int,
-        ticket_id: int,
-        application_type: str,
-        original_channel_id: int,
-        original_message_id: int,
+        applicant_id: int = 0,
+        ticket_id: int = 0,
+        application_type: str = "",
+        original_channel_id: int = 0,
+        original_message_id: int = 0,
     ):
         super().__init__(timeout=None)
         self.applicant_id = applicant_id
@@ -530,26 +597,63 @@ class CallFinalView(discord.ui.View):
         self.original_channel_id = original_channel_id
         self.original_message_id = original_message_id
 
+    def _resolve_call(
+        self, interaction: discord.Interaction
+    ) -> tuple[int, int, str, int, int] | None:
+        if self.applicant_id and self.ticket_id and self.application_type:
+            return (
+                self.applicant_id,
+                self.ticket_id,
+                self.application_type,
+                self.original_channel_id,
+                self.original_message_id,
+            )
+        if interaction.message is not None:
+            stored = get_call_final_meta(message_id=interaction.message.id)
+            if stored is not None:
+                return (
+                    int(stored.get("applicant_id", 0)),
+                    int(stored.get("ticket_id", 0)),
+                    str(stored.get("application_type", "")),
+                    int(stored.get("original_channel_id", 0)),
+                    int(stored.get("original_message_id", 0)),
+                )
+            if interaction.message.embeds:
+                parsed = parse_application_embed(interaction.message.embeds[0])
+                if parsed is not None:
+                    applicant_id, ticket_id, application_type = parsed
+                    return applicant_id, ticket_id, application_type, 0, 0
+        return None
+
     @discord.ui.button(label="Принять", style=discord.ButtonStyle.success, custom_id="call_accept")
     async def call_accept(self, interaction: discord.Interaction, button: discord.ui.Button):
         if interaction.guild is None or not isinstance(interaction.user, discord.Member):
             await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
             return
 
+        resolved = self._resolve_call(interaction)
+        if resolved is None:
+            await interaction.response.send_message(
+                "Не удалось прочитать данные заявки.",
+                ephemeral=True,
+            )
+            return
+        applicant_id, ticket_id, application_type, original_channel_id, original_message_id = resolved
+
         guild = interaction.guild
         admin = interaction.user
 
-        applicant = guild.get_member(self.applicant_id)
+        applicant = guild.get_member(applicant_id)
         if applicant is None:
             try:
-                applicant = await guild.fetch_member(self.applicant_id)
+                applicant = await guild.fetch_member(applicant_id)
             except discord.NotFound:
                 applicant = None
 
         # Выдать роль при принятии (если настроена)
         role_result: str | None = None
         if applicant is not None:
-            rid = get_accept_role_id_for_type(guild_id=guild.id, application_type=self.application_type)
+            rid = get_accept_role_id_for_type(guild_id=guild.id, application_type=application_type)
             if not rid:
                 role_result = "роль не настроена"
             else:
@@ -569,7 +673,7 @@ class CallFinalView(discord.ui.View):
                             role_result = "роль уже есть у пользователя"
                         else:
                             try:
-                                await applicant.add_roles(role, reason=f"Принят по заявке #{self.ticket_id}")
+                                await applicant.add_roles(role, reason=f"Принят по заявке #{ticket_id}")
                                 role_result = f"роль выдана: {role.mention}"
                             except discord.Forbidden:
                                 role_result = "нет прав выдать роль (иерархия/права)"
@@ -584,7 +688,7 @@ class CallFinalView(discord.ui.View):
                     embed=build_dm_verdict_embed(
                         guild=guild,
                         admin=admin,
-                        application_type=self.application_type,
+                        application_type=application_type,
                         approved=True,
                     )
                 )
@@ -601,11 +705,11 @@ class CallFinalView(discord.ui.View):
             await interaction.message.edit(embed=e, view=None)
 
         # И оригинальную заявку тоже обновим (если можем)
-        if self.original_channel_id and self.original_message_id:
+        if original_channel_id and original_message_id:
             try:
-                ch = guild.get_channel(self.original_channel_id)
+                ch = guild.get_channel(original_channel_id)
                 if isinstance(ch, discord.TextChannel):
-                    msg = await ch.fetch_message(self.original_message_id)
+                    msg = await ch.fetch_message(original_message_id)
                     if msg.embeds:
                         e2 = msg.embeds[0]
                         if e2.fields:
@@ -628,13 +732,21 @@ class CallFinalView(discord.ui.View):
 
     @discord.ui.button(label="Отказать", style=discord.ButtonStyle.danger, custom_id="call_reject")
     async def call_reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        resolved = self._resolve_call(interaction)
+        if resolved is None:
+            await interaction.response.send_message(
+                "Не удалось прочитать данные заявки.",
+                ephemeral=True,
+            )
+            return
+        applicant_id, ticket_id, application_type, original_channel_id, original_message_id = resolved
         await interaction.response.send_modal(
             CallRejectReasonModal(
-                applicant_id=self.applicant_id,
-                ticket_id=self.ticket_id,
-                application_type=self.application_type,
-                original_channel_id=self.original_channel_id,
-                original_message_id=self.original_message_id,
+                applicant_id=applicant_id,
+                ticket_id=ticket_id,
+                application_type=application_type,
+                original_channel_id=original_channel_id,
+                original_message_id=original_message_id,
             )
         )
 
