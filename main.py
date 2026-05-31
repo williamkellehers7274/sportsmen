@@ -962,6 +962,22 @@ class SborView(discord.ui.View):
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             pass
 
+    async def _defer_ephemeral(self, interaction: discord.Interaction) -> bool:
+        try:
+            await interaction.response.defer(ephemeral=True)
+            return True
+        except (discord.NotFound, discord.HTTPException):
+            return False
+
+    async def _ephemeral_notify(self, interaction: discord.Interaction, content: str) -> None:
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(content, ephemeral=True)
+            else:
+                await interaction.response.send_message(content, ephemeral=True)
+        except (discord.NotFound, discord.HTTPException):
+            pass
+
     def _set_signup_buttons_disabled(self, disabled: bool) -> None:
         for child in self.children:
             if isinstance(child, discord.ui.Button) and child.custom_id in {
