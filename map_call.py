@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import io
 import json
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +11,7 @@ from discord import app_commands
 
 _DATA_DIR = Path(__file__).resolve().parent / "data"
 _STATE_PATH = _DATA_DIR / "panel_extra_state.json"
-_LOCK = threading.Lock()
+_LOCK = asyncio.Lock()
 _ALLOWED_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 
 
@@ -117,42 +117,52 @@ class MapPlaceButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        with _LOCK:
-            data = _load_state()
-            found = _find_panel(data, interaction.message.id if interaction.message else 0)
+        message_id = interaction.message.id if interaction.message else 0
+        error: str | None = None
+        reply: str | None = None
+        panel_to_refresh: dict[str, Any] | None = None
+
+        async with _LOCK:
+            data = await asyncio.to_thread(_load_state)
+            found = _find_panel(data, message_id)
             if found is None:
-                await interaction.response.send_message("Панель не найдена или устарела.", ephemeral=True)
-                return
-            key, panel = found
-            slots: dict[str, int] = panel.setdefault("slots", {})
-            total = int(panel.get("total_slots", 0))
-            if self.place < 1 or self.place > total:
-                await interaction.response.send_message("Недопустимое место.", ephemeral=True)
-                return
-
-            uid = interaction.user.id
-            slot_key = str(self.place)
-            occupant = slots.get(slot_key)
-            current = _user_slot(slots, uid)
-
-            if occupant == uid:
-                slots.pop(slot_key, None)
-                reply = f"Место {self.place} освобождено."
-            elif occupant is not None:
-                await interaction.response.send_message("Место уже занято", ephemeral=True)
-                return
+                error = "Панель не найдена или устарела."
             else:
-                if current is not None:
-                    slots.pop(str(current), None)
-                slots[slot_key] = uid
-                reply = f"Вы заняли место {self.place}."
+                key, panel = found
+                slots: dict[str, int] = panel.setdefault("slots", {})
+                total = int(panel.get("total_slots", 0))
+                if self.place < 1 or self.place > total:
+                    error = "Недопустимое место."
+                else:
+                    uid = interaction.user.id
+                    slot_key = str(self.place)
+                    occupant = slots.get(slot_key)
+                    current = _user_slot(slots, uid)
 
-            panel["slots"] = slots
-            data["panels"][key] = panel
-            _save_state(data)
+                    if occupant == uid:
+                        slots.pop(slot_key, None)
+                        reply = f"Место {self.place} освобождено."
+                    elif occupant is not None:
+                        error = "Место уже занято"
+                    else:
+                        if current is not None:
+                            slots.pop(str(current), None)
+                        slots[slot_key] = uid
+                        reply = f"Вы заняли место {self.place}."
 
-        await interaction.response.send_message(reply, ephemeral=True)
-        await refresh_panel(interaction.client, panel)
+                    if error is None:
+                        panel["slots"] = slots
+                        data["panels"][key] = panel
+                        panel_to_refresh = panel
+                        await asyncio.to_thread(_save_state, data)
+
+        if error is not None:
+            await interaction.response.send_message(error, ephemeral=True)
+            return
+
+        await interaction.response.send_message(reply or "", ephemeral=True)
+        if panel_to_refresh is not None:
+            await refresh_panel(interaction.client, panel_to_refresh)
 
 
 async def refresh_panel(client: discord.Client, panel: dict[str, Any]) -> None:
@@ -259,10 +269,10 @@ def register_map_call_commands(tree: app_commands.CommandTree) -> None:
             "second_message_id": msg2.id if msg2 else None,
         }
 
-        with _LOCK:
-            data = _load_state()
+        async with _LOCK:
+            data = await asyncio.to_thread(_load_state)
             data.setdefault("panels", {})[str(msg1.id)] = panel
-            _save_state(data)
+            await asyncio.to_thread(_save_state, data)
 
         await interaction.followup.send(f"Расстановка создана: {msg1.jump_url}", ephemeral=True)
 
