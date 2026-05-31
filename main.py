@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import logging
 from pathlib import Path
 import asyncio
 import datetime as dt
@@ -62,6 +63,7 @@ from storage import (
     get_stream_announce_channel_id,
     get_giveaway_notify_role_ids,
     get_giveaway_states_for_guild,
+    get_sbor_panel_state,
     get_stream_announce_twitch_map,
     get_twitch_live_state_by_guild,
     get_stream_announce_user_ids,
@@ -106,6 +108,7 @@ from storage import (
     set_stream_announce_channel_id,
     set_giveaway_notify_role_ids,
     set_giveaway_state,
+    set_sbor_panel_state,
     set_stream_announce_twitch_map,
     set_twitch_live_state_by_guild,
     set_stream_announce_user_ids,
@@ -126,8 +129,11 @@ from ui import (
     ApplicationPanelView,
     ApplicationPanelV2View,
     ApplicationReceiptPanelView,
+    ApplicationReviewView,
+    CallFinalView,
     application_receipt_status_map,
 )
+from bot_resilience import install_bot_handlers, run_bot_with_restart
 from map_call import register_map_call_commands, setup_map_call
 
 EMBED_COLOR = discord.Color.from_rgb(0, 0, 0)
@@ -581,6 +587,10 @@ class Bot(discord.Client):
             destination_id = get_destination_channel_id(guild_id=guild.id)
             if destination_id:
                 self.add_view(ApplicationPanelView(destination_channel_id=destination_id))
+                if ApplicationPanelV2View is not None:
+                    self.add_view(ApplicationPanelV2View(destination_channel_id=destination_id))
+        self.add_view(ApplicationReviewView())
+        self.add_view(CallFinalView())
         self.add_view(AFKPanelView())
         self.add_view(VacationPanelView())
         self.add_view(VzpMapView())
@@ -599,6 +609,8 @@ class Bot(discord.Client):
         self.add_view(ContractReviewView())
         self.add_view(ApplicationReceiptPanelView())
         self.add_view(PrivateVoiceHubView())
+        self.add_view(SborView(author_id=0, main_target=None, sub_target=None))
+        self.add_view(PortfolioChannelView())
         setup_map_call(self)
 
         if config.GUILD_ID:
@@ -660,7 +672,7 @@ class Bot(discord.Client):
                             except Exception:
                                 pass
             except Exception:
-                pass
+                logging.getLogger("sportiki-bot").exception("Daily message loop failed")
             await asyncio.sleep(30)
 
     async def _get_twitch_access_token(self, *, force_refresh: bool = False) -> str | None:
@@ -782,11 +794,15 @@ class Bot(discord.Client):
                 try:
                     await process_expired_afk_for_guild(guild)
                 except Exception:
-                    pass
+                    logging.getLogger("sportiki-bot").exception(
+                        "AFK expire loop failed for guild %s", guild.id
+                    )
                 try:
                     await process_expired_vacation_for_guild(guild)
                 except Exception:
-                    pass
+                    logging.getLogger("sportiki-bot").exception(
+                        "Vacation expire loop failed for guild %s", guild.id
+                    )
             await asyncio.sleep(30)
 
     async def _attack_def_expire_loop(self) -> None:
@@ -832,6 +848,7 @@ class Bot(discord.Client):
 
 
 bot = Bot()
+install_bot_handlers(bot)
 register_map_call_commands(bot.tree)
 
 
@@ -869,6 +886,50 @@ class SborView(discord.ui.View):
         self.published_message_id: int | None = None
         self.is_published: bool = False
 
+    def _to_storage(self) -> dict[str, object]:
+        return {
+            "author_id": self.author_id,
+            "main_target": self.main_target,
+            "sub_target": self.sub_target,
+            "main_ids": sorted(self.main_ids),
+            "sub_ids": sorted(self.sub_ids),
+            "published_channel_id": self.published_channel_id,
+            "published_message_id": self.published_message_id,
+            "is_published": self.is_published,
+        }
+
+    def _from_storage(self, raw: dict[str, object]) -> None:
+        self.author_id = int(raw.get("author_id", 0))
+        mt = raw.get("main_target")
+        st = raw.get("sub_target")
+        self.main_target = int(mt) if mt is not None else None
+        self.sub_target = int(st) if st is not None else None
+        self.main_ids = {int(x) for x in raw.get("main_ids", [])}
+        self.sub_ids = {int(x) for x in raw.get("sub_ids", [])}
+        pub_ch = raw.get("published_channel_id")
+        pub_msg = raw.get("published_message_id")
+        self.published_channel_id = int(pub_ch) if pub_ch is not None else None
+        self.published_message_id = int(pub_msg) if pub_msg is not None else None
+        self.is_published = bool(raw.get("is_published", False))
+
+    def _load_from_message(self, *, guild_id: int, message_id: int) -> bool:
+        raw = get_sbor_panel_state(guild_id=guild_id, message_id=message_id)
+        if raw is None:
+            return False
+        self._from_storage(raw)
+        return True
+
+    def _save_for_message(self, *, guild_id: int, message_id: int) -> None:
+        set_sbor_panel_state(guild_id=guild_id, message_id=message_id, state=self._to_storage())
+
+    def _bind_interaction(self, interaction: discord.Interaction) -> bool:
+        if interaction.guild is None or interaction.message is None:
+            return False
+        if not self._load_from_message(guild_id=interaction.guild.id, message_id=interaction.message.id):
+            if self.author_id:
+                self._save_for_message(guild_id=interaction.guild.id, message_id=interaction.message.id)
+        return True
+
     def _apply_to_embed(self, embed: discord.Embed, guild: discord.Guild) -> discord.Embed:
         main_title = f"Участники ({len(self.main_ids)}/{self.main_target})" if self.main_target else f"Участники ({len(self.main_ids)})"
         sub_title = f"Замены ({len(self.sub_ids)}/{self.sub_target})" if self.sub_target else f"Замены ({len(self.sub_ids)})"
@@ -880,6 +941,7 @@ class SborView(discord.ui.View):
     async def _refresh_message(self, interaction: discord.Interaction) -> None:
         if interaction.message is None or interaction.guild is None:
             return
+        self._save_for_message(guild_id=interaction.guild.id, message_id=interaction.message.id)
         embeds = interaction.message.embeds
         if not embeds:
             return
@@ -971,6 +1033,9 @@ class SborView(discord.ui.View):
 
     @discord.ui.button(label="В основу", style=discord.ButtonStyle.success, custom_id="sbor_join_main")
     async def join_main(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._bind_interaction(interaction):
+            await interaction.response.send_message("Сбор не найден или устарел.", ephemeral=True)
+            return
         if self.is_published:
             await interaction.response.send_message("Список уже опубликован. Запись закрыта, доступна только модерация.", ephemeral=True)
             return
@@ -982,6 +1047,9 @@ class SborView(discord.ui.View):
 
     @discord.ui.button(label="На замену", style=discord.ButtonStyle.secondary, custom_id="sbor_join_sub")
     async def join_sub(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._bind_interaction(interaction):
+            await interaction.response.send_message("Сбор не найден или устарел.", ephemeral=True)
+            return
         if self.is_published:
             await interaction.response.send_message("Список уже опубликован. Запись закрыта, доступна только модерация.", ephemeral=True)
             return
@@ -993,6 +1061,9 @@ class SborView(discord.ui.View):
 
     @discord.ui.button(label="Выйти", style=discord.ButtonStyle.danger, custom_id="sbor_leave")
     async def leave(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._bind_interaction(interaction):
+            await interaction.response.send_message("Сбор не найден или устарел.", ephemeral=True)
+            return
         if self.is_published:
             await interaction.response.send_message("Список уже опубликован. Запись закрыта, доступна только модерация.", ephemeral=True)
             return
@@ -1004,6 +1075,9 @@ class SborView(discord.ui.View):
 
     @discord.ui.button(label="Модерация", style=discord.ButtonStyle.primary, custom_id="sbor_moderate")
     async def moderate(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not self._bind_interaction(interaction):
+            await interaction.response.send_message("Сбор не найден или устарел.", ephemeral=True)
+            return
         if interaction.guild is None or interaction.channel is None or interaction.message is None:
             await interaction.response.send_message("Команда доступна только на сервере.", ephemeral=True)
             return
@@ -1100,6 +1174,10 @@ class SborActionSelect(discord.ui.Select):
             view_ref.is_published = True
             view_ref._set_signup_buttons_disabled(True)
             await source_msg.edit(view=view_ref)
+            view_ref._save_for_message(
+                guild_id=interaction.guild.id,
+                message_id=self.panel.source_message_id,
+            )
             await interaction.response.send_message("Список опубликован. Запись закрыта, доступна только модерация.", ephemeral=True)
             return
 
@@ -1113,6 +1191,10 @@ class SborActionSelect(discord.ui.Select):
             e = self.panel.sbor_view._apply_to_embed(source_msg.embeds[0], interaction.guild)
             await source_msg.edit(embed=e, view=self.panel.sbor_view)
             await self.panel.sbor_view._update_published_message(guild=interaction.guild, source_embed=e)
+            self.panel.sbor_view._save_for_message(
+                guild_id=interaction.guild.id,
+                message_id=self.panel.source_message_id,
+            )
         await interaction.response.send_message(result_text, ephemeral=True)
 
 
@@ -3513,6 +3595,7 @@ async def sbor_command(
         view=view,
         allowed_mentions=discord.AllowedMentions(roles=True),
     )
+    set_sbor_panel_state(guild_id=interaction.guild.id, message_id=msg.id, state=view._to_storage())
 
     dm_embed = discord.Embed(
         title="— ・ Сбор",
@@ -7065,6 +7148,12 @@ async def on_message(message: discord.Message):
             pass
 
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="[%(asctime)s] [%(levelname)-8s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+
 try:
     acquire_instance_lock_or_raise()
 except Exception as exc:
@@ -7072,7 +7161,7 @@ except Exception as exc:
     sys.exit(1)
 
 try:
-    bot.run(config.DISCORD_TOKEN)
+    run_bot_with_restart(bot, config.DISCORD_TOKEN)
 finally:
     release_instance_lock()
 
