@@ -558,11 +558,11 @@ class CallRejectReasonModal(discord.ui.Modal):
             await interaction.message.edit(embed=e, view=None)
 
         # И оригинальную заявку тоже обновим (если можем)
-        if original_channel_id and original_message_id:
+        if self.original_channel_id and self.original_message_id:
             try:
-                ch = guild.get_channel(original_channel_id)
+                ch = guild.get_channel(self.original_channel_id)
                 if isinstance(ch, discord.TextChannel):
-                    msg = await ch.fetch_message(original_message_id)
+                    msg = await ch.fetch_message(self.original_message_id)
                     if msg.embeds:
                         e2 = msg.embeds[0]
                         if e2.fields:
